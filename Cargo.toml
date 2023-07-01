@@ -1,0 +1,14 @@
+[package]
+name = "reiterator"
+version = "0.1.0"
+authors = ["Will Sturgeon <willstrgn@gmail.com>"]
+edition = "2021"
+description = "Lazy repeatable caching iterator that only ever calculates each element once."
+license = "MPL-2.0"
+keywords = ["iterator", "repeat", "restart", "memoize", "caching"]
+categories = ["algorithms", "data-structures", "mathematics", "no-std::no-alloc", "rust-patterns"]
+repository = "https://github.com/wrsturgeon/reiterator"
+build = "build.rs"
+
+[dev-dependencies]
+quickcheck = "1.0.3"
