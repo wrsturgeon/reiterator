@@ -21,7 +21,7 @@
 //! let mut iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed or cached until...
 //! //              vvvvv here. And, even then, only the first two.
 //! assert_eq!(iter.at(1).map(value), Some(&'b'));
-//! //                             ^^^^^ And an analogous `index` function.
+//! //                        ^^^^^ And an analogous `index` function.
 //! ```
 //!
 //! You can drive it like a normal `Iterator`:
