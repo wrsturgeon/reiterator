@@ -12,6 +12,12 @@ use ::alloc::vec::Vec;
 
 quickcheck::quickcheck! {
 
+    fn cache_range(indices: ::alloc::vec::Vec<u8>) -> bool {
+        let mut range = 0..=u8::MAX;
+        let cache = Cache::new(|| range.next());
+        indices.into_iter().fold(true, |acc, i| acc && cache.get(usize::from(i)).is_some_and(|v| *v == i))
+    }
+
     fn never_panics(v: Vec<bool>, indices: Vec<usize>) -> bool {
         let size = v.len();
         let mut iter = Reiterator::new(v);
@@ -43,7 +49,7 @@ quickcheck::quickcheck! {
         true
     }
 
-    fn correct_range(size: u16, indices: Vec<usize>) -> bool {
+    fn correct_range(size: u8, indices: Vec<usize>) -> bool {
         if size > 0 {
             let mut iter = Reiterator::new(0..size);
             for i in indices {
