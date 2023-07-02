@@ -7,33 +7,42 @@
 //! Cache that only works with iterator-like structures.
 //! This file shouldn't have a single instace of the term `mut` (other than this one lol).
 
+#![allow(box_pointers)]
+
 use ::alloc::{vec, vec::Vec};
-use ::core::cell::{Ref, RefCell};
+use ::core::{cell::RefCell, pin::Pin};
+use alloc::boxed::Box;
 
 /// Cache that only works with iterator-like structures.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Cache<A, F: FnMut() -> Option<A>> {
-    vec: RefCell<Vec<A>>,
-    f: RefCell<F>,
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Cache<I: Iterator> {
+    iter: RefCell<I>,
+    vec: RefCell<Vec<Pin<Box<I::Item>>>>, // TODO: vector of buffers
 }
 
-impl<A, F: FnMut() -> Option<A>> Cache<A, F> {
+impl<I: Iterator> Cache<I> {
     /// Initialize a new empty cache.
-    pub const fn new(f: F) -> Self {
+    pub const fn new(i: I) -> Self {
         Self {
+            iter: RefCell::new(i),
             vec: RefCell::new(vec![]),
-            f: RefCell::new(f),
         }
     }
 
     /// If not already cached, repeatedly call `next` until we either reach `index` or `next` returns `None`.
-    pub fn get(&self, index: usize) -> Option<Ref<'_, A>> {
+    pub fn get(&self, index: usize) -> Option<&I::Item> {
         loop {
-            if let cached @ Some(_) = Ref::filter_map(self.vec.borrow(), |v| v.get(index)).ok() {
-                return cached;
-            } else {
-                self.vec.borrow_mut().push(self.f.borrow_mut()()?);
+            if let Some(cached) = self.vec.borrow().get(index) {
+                return Some(
+                    #[allow(trivial_casts, unsafe_code)]
+                    unsafe {
+                        &*(cached.as_ref().get_ref() as *const _)
+                    },
+                );
             }
+            self.vec
+                .borrow_mut()
+                .push(Box::pin(self.iter.borrow_mut().next()?));
         }
     }
 }

@@ -17,11 +17,14 @@
 //! Plus, it returns the index of the value as well, but there are built-in `map`-compatible mini-functions to get either the value or the index only:
 //!
 //! ```rust
-//! use reiterator::{Reiterate, value};
-//! let mut iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed or cached until...
-//! //              vvvvv here. And, even then, only the first two.
-//! assert_eq!(iter.at(1).map(value), Some(&'b'));
-//! //                        ^^^^^ And an analogous `index` function.
+//! use reiterator::{OptionIndexed, Reiterate, value};
+//! let iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed until...
+//! let indexed = iter.at(1); // here. We only compute the first two, and we cache their results.
+//! assert!(indexed.is_some());
+//! assert_eq!(indexed.value(), Some(&'b'));
+//! assert_eq!(indexed.index(), Some(1));
+//! let _ = iter.at(2); // Calls the iterator only once
+//! let _ = iter.at(0); let _ = iter.at(1); let _ = iter.at(2); // All cached! Just a few clocks and pulling from the heap.
 //! ```
 //!
 //! You can drive it like a normal `Iterator`:
@@ -31,30 +34,34 @@
 //! let mut iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed or cached until...
 //! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' }));
 //! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' })); // Using the cached version
-//! assert_eq!(iter.next(), Some(Indexed { index: 0, value: &'a' })); // Note that `next` doesn't "know" we've already called `get`
-//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' })); // ...but it does change the internal `next_index`
-//! assert_eq!(iter.next(), Some(Indexed { index: 1, value: &'b' }));
-//! assert_eq!(iter.next(), Some(Indexed { index: 2, value: &'c' }));
-//! assert_eq!(iter.next(), None);
+//! assert_eq!(iter.next(), Some(1)); // Note that `next` doesn't return a value for simplicity: would it return 'a' or 'b'?
+//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' })); // ...but it does change the internal index
+//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
+//! assert_eq!(iter.next(), Some(2));
+//! assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));
+//! assert_eq!(iter.next(), Some(3)); // Returns the new index even though there's no value
+//! assert_eq!(iter.get(), None); // Off the end of the iterator!
 //!
 //! // But then you can rewind and do it all again for free, returning cached references to the same values we just made:
 //! iter.restart();
-//! assert_eq!(iter.next(), Some(Indexed { index: 0, value: &'a' }));
-//! assert_eq!(iter.next(), Some(Indexed { index: 1, value: &'b' }));
-//! assert_eq!(iter.next(), Some(Indexed { index: 2, value: &'c' }));
-//! assert_eq!(iter.next(), None);
+//! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' }));
+//! assert_eq!(iter.next(), Some(1));
+//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
 //!
 //! // Or start from anywhere:
-//! iter.next_index = 1;
-//! assert_eq!(iter.next(), Some(Indexed { index: 1, value: &'b' }));
-//! assert_eq!(iter.next(), Some(Indexed { index: 2, value: &'c' }));
-//! assert_eq!(iter.next(), None);
+//! iter.index = 1;
+//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
+//! assert_eq!(iter.next(), Some(2));
+//! assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));
+//! assert_eq!(iter.at(1), Some(Indexed { index: 1, value: &'b' }));
+//! assert_eq!(iter.at(2), Some(Indexed { index: 2, value: &'c' }));
+//! assert_eq!(iter.at(3), None);
 //!
 //! // And just to prove that it's literally a reference to the same cached value in memory:
 //! assert!(std::ptr::eq(iter.at(0).unwrap().value, iter.at(0).unwrap().value));
 //! ```
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![deny(warnings)]
 #![warn(
     clippy::all,
@@ -139,7 +146,7 @@ pub struct Indexed<'a, A> {
 #[allow(clippy::needless_pass_by_value)]
 #[inline(always)]
 #[must_use]
-pub const fn index<A>(indexed: Indexed<'_, A>) -> usize {
+pub fn index<A>(indexed: Indexed<'_, A>) -> usize {
     indexed.index
 }
 
@@ -147,28 +154,66 @@ pub const fn index<A>(indexed: Indexed<'_, A>) -> usize {
 #[allow(clippy::needless_pass_by_value)]
 #[inline(always)]
 #[must_use]
-pub const fn value<A>(indexed: Indexed<'_, A>) -> &A {
+pub fn value<A>(indexed: Indexed<'_, A>) -> &A {
     indexed.value
+}
+
+/// Clone and return the value from an `Indexed` item. Consumes its argument: written with `.map(value)` in mind.
+#[allow(clippy::needless_pass_by_value)]
+#[inline(always)]
+#[must_use]
+pub fn clone_value<A: Clone>(indexed: Indexed<'_, A>) -> A {
+    indexed.value.clone()
+}
+
+/// Copy and return the value from an `Indexed` item. Consumes its argument: written with `.map(value)` in mind.
+#[allow(clippy::needless_pass_by_value)]
+#[inline(always)]
+#[must_use]
+pub fn copy_value<A: Copy>(indexed: Indexed<'_, A>) -> A {
+    *indexed.value
+}
+
+/// Split an `Option<Indexed<'a, A>>` into its index (`Option<usize>`) or value (`Option<&A>`).
+pub trait OptionIndexed<'a> {
+    /// The `A` in `Option<Indexed<'a, A>>`.
+    type Value;
+    /// Pull the index out of an `Option<Indexed<'a, A>>` if it exists.
+    #[must_use]
+    fn index(&self) -> Option<usize>;
+    /// Pull the value out of an `Option<Indexed<'a, A>>` if it exists.
+    #[must_use]
+    fn value(&self) -> Option<&'a Self::Value>;
+}
+
+impl<'a, A> OptionIndexed<'a> for Option<Indexed<'a, A>> {
+    type Value = A;
+    #[inline(always)]
+    #[must_use]
+    fn index(&self) -> Option<usize> {
+        self.as_ref().map(|i| i.index)
+    }
+    #[inline(always)]
+    #[must_use]
+    fn value(&self) -> Option<&'a Self::Value> {
+        self.as_ref().map(|i| i.value)
+    }
 }
 
 /// Caching repeatable iterator that only ever calculates each element once.
 /// NOTE that if the iterator is not referentially transparent (i.e. pure, e.g. mutable state), this *will not necessarily work*!
 /// We replace a call to a previously evaluated index with the value we already made, so side effects will not show up at all.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[allow(clippy::partial_pub_fields)]
+#[allow(missing_debug_implementations, clippy::partial_pub_fields)]
 pub struct Reiterator<I: Iterator> {
-    /// Iterator that this struct thinly wraps.
-    iter: I,
-
-    /// Store of previously computed (referentially transparent) values.
-    cache: ::alloc::vec::Vec<I::Item>,
+    /// Iterator and a store of previously computed (referentially transparent) values.
+    cache: Cache<I>,
 
     /// Index of the item this iterator _will_ return when we call `get`.
     /// Mutable: you can assign _any_ value, even out of bounds, and nothing will break:
     ///   - If the index is in bounds, the next time you call `get`, we calculate each element until this one (if not already cached).
     ///   - If the index is out of bounds, we return `None` (after exhausting the iterator, though: it's not necessarily a fixed size).
     /// Note that this doesn't mean that this index's value has been calculated yet.
-    pub next_index: usize,
+    pub index: usize,
 }
 
 impl<I: Iterator> Reiterator<I> {
@@ -177,26 +222,22 @@ impl<I: Iterator> Reiterator<I> {
     #[must_use]
     pub fn new<II: IntoIterator<IntoIter = I>>(iter: II) -> Self {
         Self {
-            iter: iter.into_iter(),
-            cache: ::alloc::vec![],
-            next_index: 0,
+            cache: Cache::new(iter.into_iter()),
+            index: 0,
         }
     }
 
     /// Set the index to zero. Literal drop-in equivalent for `.index = 0`, always inlined. Clearer, I guess.
     #[inline(always)]
     pub fn restart(&mut self) {
-        self.next_index = 0;
+        self.index = 0;
     }
 
     /// Return the element at the requested index *or compute it if we haven't*, provided it's in bounds.
     #[inline]
     #[must_use]
-    pub fn at(&mut self, index: usize) -> Option<Indexed<'_, I::Item>> {
-        while self.cache.get(index).is_none() {
-            self.cache.push(self.iter.next()?);
-        }
-        self.cache.get(index).map(|value| Indexed { index, value }) // Guaranteed to be `Some(_)`, but let's not poke the bear
+    pub fn at(&self, index: usize) -> Option<Indexed<'_, I::Item>> {
+        self.cache.get(index).map(|value| Indexed { index, value })
     }
 
     /// Return the current element or compute it if we haven't, provided it's in bounds.
@@ -204,26 +245,17 @@ impl<I: Iterator> Reiterator<I> {
     /// we won't advance to the next element until you explicitly call `next`.
     #[inline(always)]
     #[must_use]
-    pub fn get(&mut self) -> Option<Indexed<'_, I::Item>> {
-        self.at(self.next_index)
+    pub fn get(&self) -> Option<Indexed<'_, I::Item>> {
+        self.at(self.index)
     }
 
     /// Advance the index without computing the corresponding value.
     #[inline(always)]
-    pub fn advance(&mut self) -> Option<usize> {
-        self.next_index.checked_add(1).map(|i| {
-            self.next_index = i;
+    pub fn next(&mut self) -> Option<usize> {
+        self.index.checked_add(1).map(|i| {
+            self.index = i;
             i
         })
-    }
-
-    /// Return the current element or compute it, then move on.
-    #[inline(always)]
-    #[must_use]
-    pub fn next(&mut self) -> Option<Indexed<'_, I::Item>> {
-        let i = self.next_index;
-        let _ = self.advance(); // If we reach the end of `usize` (we won't, but) it's not *this* element's problem.
-        self.at(i)
     }
 }
 

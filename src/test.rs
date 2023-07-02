@@ -8,19 +8,50 @@
 
 #[allow(clippy::wildcard_imports)]
 use crate::*;
-use ::alloc::vec::Vec;
+use ::alloc::{vec, vec::Vec};
+
+#[test]
+fn doctest_1_copy() {
+    let iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed until...
+    assert!(iter.at(1).is_some()); // here. We only compute the first two, and we cache their results.
+    assert_eq!(iter.at(1).value(), Some(&'b')); // Cached. A few clock cycles and a pull from the heap.
+    assert_eq!(iter.at(1).index(), Some(1));
+    let _ = iter.at(2); // Calls the iterator only once to make item 2.
+    let _ = iter.at(0);
+    let _ = iter.at(1);
+    let _ = iter.at(2); // All cached! Just a few clocks and pulling from the heap.
+}
+
+/// Test vector reallocation.
+/// Vectors are usually implemented as vectors that occasionally double their size,
+/// and if you can't double it in place (e.g. if someone else owns the memory just to your right),
+/// it'll copy all the elements to wherever you can buy a plot of land twice the current size.
+/// In this case, all references are immediately invalidated.
+/// (This verifiably happens with a usual `Vec<A>`.)
+/// Experimenting with `Pin`s and two layers of indirection.
+#[test]
+fn simple_range_doesnt_panic() {
+    let cache = Cache::new(0..u16::MAX);
+    for i in 0..u16::MAX {
+        let lhs = cache.get(usize::from(i));
+        let rhs = Some(&i);
+        println!("{lhs:#?} == {rhs:#?}");
+        assert_eq!(lhs, rhs);
+    }
+}
 
 quickcheck::quickcheck! {
 
     fn cache_range(indices: ::alloc::vec::Vec<u8>) -> bool {
-        let mut range = 0..=u8::MAX;
-        let cache = Cache::new(|| range.next());
-        indices.into_iter().fold(true, |acc, i| acc && cache.get(usize::from(i)).is_some_and(|v| *v == i))
+        let cache = Cache::new(0..=u8::MAX);
+        indices.into_iter().fold(true, |acc, i| {
+            acc && cache.get(usize::from(i)).is_some_and(|v| *v == i)
+        })
     }
 
     fn never_panics(v: Vec<bool>, indices: Vec<usize>) -> bool {
         let size = v.len();
-        let mut iter = Reiterator::new(v);
+        let iter = Reiterator::new(v);
         for i in indices {
             assert_eq!(iter.at(i).map(index), (i < size).then_some(i));
         }
@@ -30,7 +61,7 @@ quickcheck::quickcheck! {
     fn always_some_in_bounds(v: Vec<bool>, indices: Vec<usize>) -> bool {
         let size = v.len();
         if size > 0 {
-            let mut iter = Reiterator::new(v);
+            let iter = Reiterator::new(v);
             for i in indices {
                 assert_eq!(iter.at(i % size).map(index), Some(i % size));
             }
@@ -40,7 +71,7 @@ quickcheck::quickcheck! {
 
     fn always_none_out_of_bounds(v: Vec<bool>, indices: Vec<usize>) -> bool {
         let size = v.len();
-        let mut iter = Reiterator::new(v);
+        let iter = Reiterator::new(v);
         for i in indices {
             if i >= size {
                 assert!(iter.at(i).is_none());
@@ -51,11 +82,11 @@ quickcheck::quickcheck! {
 
     fn correct_range(size: u8, indices: Vec<usize>) -> bool {
         if size > 0 {
-            let mut iter = Reiterator::new(0..size);
+            let iter = Reiterator::new(0..size);
             for i in indices {
                 let indexed = iter.at(i);
-                assert_eq!(indexed.map(|x| x.index), (i < usize::from(size)).then_some(i));
-                assert_eq!(indexed.map(|x| x.index), indexed.map(|x| usize::from(*x.value)));
+                assert_eq!(indexed.as_ref().map(|x| x.index), (i < usize::from(size)).then_some(i));
+                assert_eq!(indexed.as_ref().map(|x| x.index), indexed.map(|x| usize::from(*x.value)));
             }
         }
         true
