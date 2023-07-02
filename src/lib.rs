@@ -32,15 +32,15 @@
 //! ```rust
 //! use reiterator::{Indexed, Reiterate, value};
 //! let mut iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed or cached until...
-//! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' }));
+//! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' })); // here.
 //! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' })); // Using the cached version
 //! assert_eq!(iter.next(), Some(1)); // Note that `next` doesn't return a value for simplicity: would it return 'a' or 'b'?
 //! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' })); // ...but it does change the internal index
 //! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
 //! assert_eq!(iter.next(), Some(2));
 //! assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));
-//! assert_eq!(iter.next(), Some(3)); // Returns the new index even though there's no value
-//! assert_eq!(iter.get(), None); // Off the end of the iterator!
+//! assert_eq!(iter.next(), None); // Off the end of the iterator!
+//! assert_eq!(iter.get(), None);
 //!
 //! // But then you can rewind and do it all again for free, returning cached references to the same values we just made:
 //! iter.restart();
@@ -252,10 +252,8 @@ impl<I: Iterator> Reiterator<I> {
     /// Advance the index without computing the corresponding value.
     #[inline(always)]
     pub fn next(&mut self) -> Option<usize> {
-        self.index.checked_add(1).map(|i| {
-            self.index = i;
-            i
-        })
+        self.index = self.index.checked_add(1)?;
+        self.cache.get(self.index).map(|_| self.index)
     }
 }
 

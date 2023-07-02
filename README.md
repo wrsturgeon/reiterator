@@ -11,11 +11,14 @@ Rewind it or set it ten elements ahead, and it'll gladly oblige, but only when y
 Plus, it returns the index of the value as well, but there are built-in `map`-compatible mini-functions to get either the value or the index only:
 
 ```rust
-use reiterator::{Reiterate, value};
-let mut iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed or cached until...
-//              vvvvv here. And, even then, only the first two.
-assert_eq!(iter.at(1).map(value), Some(&'b'));
-//                        ^^^^^ And an analogous `index` function.
+use reiterator::{OptionIndexed, Reiterate, value};
+let iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed until...
+let indexed = iter.at(1); // here. We only compute the first two, and we cache their results.
+assert!(indexed.is_some());
+assert_eq!(indexed.value(), Some(&'b'));
+assert_eq!(indexed.index(), Some(1));
+let _ = iter.at(2); // Calls the iterator only once
+let _ = iter.at(0); let _ = iter.at(1); let _ = iter.at(2); // All cached! Just a few clocks and pulling from the heap.
 ```
 
 You can drive it like a normal `Iterator`:
@@ -30,8 +33,8 @@ assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' })); // ...but it do
 assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
 assert_eq!(iter.next(), Some(2));
 assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));
-assert_eq!(iter.next(), Some(3)); // Returns the new index even though there's no value
-assert_eq!(iter.get(), None); // Off the end of the iterator!
+assert_eq!(iter.next(), None; // Off the end of the iterator!
+assert_eq!(iter.get(), None);
 
 // But then you can rewind and do it all again for free, returning cached references to the same values we just made:
 iter.restart();
