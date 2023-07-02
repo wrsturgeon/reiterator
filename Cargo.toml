@@ -1,6 +1,6 @@
 [package]
 name = "reiterator"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Will Sturgeon <willstrgn@gmail.com>"]
 edition = "2021"
 description = "Lazy repeatable caching iterator that only ever calculates each element once."
