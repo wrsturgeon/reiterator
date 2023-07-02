@@ -43,7 +43,7 @@ assert_eq!(iter.next(), Some(1));
 assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
 
 // Or start from anywhere:
-iter.index = 1;
+iter.index.set(1);
 assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
 assert_eq!(iter.next(), Some(2));
 assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));

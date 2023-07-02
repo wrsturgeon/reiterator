@@ -49,7 +49,7 @@
 //! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
 //!
 //! // Or start from anywhere:
-//! iter.index = 1;
+//! iter.index.set(1);
 //! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
 //! assert_eq!(iter.next(), Some(2));
 //! assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));
@@ -118,8 +118,10 @@
     clippy::inline_always,
     clippy::match_ref_pats,
     clippy::mod_module_files,
+    clippy::pub_use,
     clippy::question_mark_used,
-    clippy::separated_literal_suffix
+    clippy::separated_literal_suffix,
+    clippy::single_char_lifetime_names
 )]
 
 extern crate alloc;
@@ -130,6 +132,8 @@ mod cache;
 mod test;
 
 pub use cache::Cache;
+
+use ::core::cell::Cell;
 
 /// A value as well as how many elements an iterator spat out before it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -146,7 +150,7 @@ pub struct Indexed<'a, A> {
 #[allow(clippy::needless_pass_by_value)]
 #[inline(always)]
 #[must_use]
-pub fn index<A>(indexed: Indexed<'_, A>) -> usize {
+pub const fn index<A>(indexed: Indexed<'_, A>) -> usize {
     indexed.index
 }
 
@@ -154,7 +158,7 @@ pub fn index<A>(indexed: Indexed<'_, A>) -> usize {
 #[allow(clippy::needless_pass_by_value)]
 #[inline(always)]
 #[must_use]
-pub fn value<A>(indexed: Indexed<'_, A>) -> &A {
+pub const fn value<A>(indexed: Indexed<'_, A>) -> &A {
     indexed.value
 }
 
@@ -170,7 +174,7 @@ pub fn clone_value<A: Clone>(indexed: Indexed<'_, A>) -> A {
 #[allow(clippy::needless_pass_by_value)]
 #[inline(always)]
 #[must_use]
-pub fn copy_value<A: Copy>(indexed: Indexed<'_, A>) -> A {
+pub const fn copy_value<A: Copy>(indexed: Indexed<'_, A>) -> A {
     *indexed.value
 }
 
@@ -213,7 +217,7 @@ pub struct Reiterator<I: Iterator> {
     ///   - If the index is in bounds, the next time you call `get`, we calculate each element until this one (if not already cached).
     ///   - If the index is out of bounds, we return `None` (after exhausting the iterator, though: it's not necessarily a fixed size).
     /// Note that this doesn't mean that this index's value has been calculated yet.
-    pub index: usize,
+    pub index: Cell<usize>,
 }
 
 impl<I: Iterator> Reiterator<I> {
@@ -223,14 +227,14 @@ impl<I: Iterator> Reiterator<I> {
     pub fn new<II: IntoIterator<IntoIter = I>>(iter: II) -> Self {
         Self {
             cache: Cache::new(iter.into_iter()),
-            index: 0,
+            index: Cell::new(0),
         }
     }
 
     /// Set the index to zero. Literal drop-in equivalent for `.index = 0`, always inlined. Clearer, I guess.
     #[inline(always)]
-    pub fn restart(&mut self) {
-        self.index = 0;
+    pub fn restart(&self) {
+        self.index.set(0);
     }
 
     /// Return the element at the requested index *or compute it if we haven't*, provided it's in bounds.
@@ -246,14 +250,14 @@ impl<I: Iterator> Reiterator<I> {
     #[inline(always)]
     #[must_use]
     pub fn get(&self) -> Option<Indexed<'_, I::Item>> {
-        self.at(self.index)
+        self.at(self.index.get())
     }
 
     /// Advance the index without computing the corresponding value.
     #[inline(always)]
-    pub fn next(&mut self) -> Option<usize> {
-        self.index = self.index.checked_add(1)?;
-        self.cache.get(self.index).map(|_| self.index)
+    pub fn next(&self) -> Option<usize> {
+        self.index.set(self.index.get().checked_add(1)?);
+        self.cache.get(self.index.get()).map(|_| self.index.get())
     }
 }
 

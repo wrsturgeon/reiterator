@@ -10,16 +10,41 @@
 use crate::*;
 use ::alloc::{vec, vec::Vec};
 
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 #[test]
-fn doctest_1_copy() {
-    let iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed until...
-    assert!(iter.at(1).is_some()); // here. We only compute the first two, and we cache their results.
-    assert_eq!(iter.at(1).value(), Some(&'b')); // Cached. A few clock cycles and a pull from the heap.
-    assert_eq!(iter.at(1).index(), Some(1));
-    let _ = iter.at(2); // Calls the iterator only once to make item 2.
-    let _ = iter.at(0);
-    let _ = iter.at(1);
-    let _ = iter.at(2); // All cached! Just a few clocks and pulling from the heap.
+fn persistent_addresses_cache() {
+    let range = 0..u16::MAX;
+    let cache = Cache::new(range.clone());
+    let mut addresses = vec![];
+    for i in range.clone() {
+        addresses.push(cache.get(usize::from(i)).unwrap());
+    }
+    for i in range {
+        assert_eq!(*addresses[usize::from(i)], i);
+    }
+}
+
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
+#[test]
+fn persistent_addresses_reiterator() {
+    let range = 0..u16::MAX;
+    let iter = range.clone().reiterate();
+    let mut addresses = vec![];
+    loop {
+        addresses.push(iter.get().unwrap());
+        if iter.next().is_none() {
+            break;
+        }
+    }
+    for i in range {
+        assert_eq!(
+            addresses[usize::from(i)],
+            Indexed {
+                index: usize::from(i),
+                value: &i
+            }
+        );
+    }
 }
 
 /// Test vector reallocation.
@@ -35,7 +60,6 @@ fn simple_range_doesnt_panic() {
     for i in 0..u16::MAX {
         let lhs = cache.get(usize::from(i));
         let rhs = Some(&i);
-        println!("{lhs:#?} == {rhs:#?}");
         assert_eq!(lhs, rhs);
     }
 }
@@ -44,8 +68,8 @@ quickcheck::quickcheck! {
 
     fn cache_range(indices: ::alloc::vec::Vec<u8>) -> bool {
         let cache = Cache::new(0..=u8::MAX);
-        indices.into_iter().fold(true, |acc, i| {
-            acc && cache.get(usize::from(i)).is_some_and(|v| *v == i)
+        indices.into_iter().all(|i| {
+            cache.get(usize::from(i)).is_some_and(|v| *v == i)
         })
     }
 

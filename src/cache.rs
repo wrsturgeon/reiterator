@@ -16,12 +16,15 @@ use alloc::boxed::Box;
 /// Cache that only works with iterator-like structures.
 #[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Cache<I: Iterator> {
+    /// Iterator producing the input being cached.
     iter: RefCell<I>,
+    /// Vector of cached inputs.
     vec: RefCell<Vec<Pin<Box<I::Item>>>>, // TODO: vector of buffers
 }
 
 impl<I: Iterator> Cache<I> {
     /// Initialize a new empty cache.
+    #[inline(always)]
     pub const fn new(i: I) -> Self {
         Self {
             iter: RefCell::new(i),
@@ -30,11 +33,13 @@ impl<I: Iterator> Cache<I> {
     }
 
     /// If not already cached, repeatedly call `next` until we either reach `index` or `next` returns `None`.
+    #[inline]
     pub fn get(&self, index: usize) -> Option<&I::Item> {
         loop {
             if let Some(cached) = self.vec.borrow().get(index) {
                 return Some(
-                    #[allow(trivial_casts, unsafe_code)]
+                    #[allow(clippy::as_conversions, trivial_casts, unsafe_code)]
+                    // SAFETY: Pinned addresses with the correct lifetime. Property-tested as well.
                     unsafe {
                         &*(cached.as_ref().get_ref() as *const _)
                     },
