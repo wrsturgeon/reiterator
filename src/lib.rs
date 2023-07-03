@@ -113,6 +113,7 @@
     variant_size_differences
 )]
 #![allow(
+    box_pointers,
     clippy::blanket_clippy_restriction_lints,
     clippy::implicit_return,
     clippy::inline_always,
@@ -126,122 +127,60 @@
 
 extern crate alloc;
 
-mod cache;
+pub mod cache;
+pub mod indexed;
 
 #[cfg(test)]
 mod test;
 
-pub use cache::Cache;
-
-use ::core::cell::Cell;
-
-/// A value as well as how many elements an iterator spat out before it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[allow(clippy::exhaustive_structs, clippy::single_char_lifetime_names)]
-pub struct Indexed<'a, A> {
-    /// Number of elements an iterator spat out before this one.
-    pub index: usize,
-
-    /// Output of an iterator.
-    pub value: &'a A,
-}
-
-/// Return the index from an `Indexed` item. Consumes its argument: written with `.map(index)` in mind.
-#[allow(clippy::needless_pass_by_value)]
-#[inline(always)]
-#[must_use]
-pub const fn index<A>(indexed: Indexed<'_, A>) -> usize {
-    indexed.index
-}
-
-/// Return the value from an `Indexed` item. Consumes its argument: written with `.map(value)` in mind.
-#[allow(clippy::needless_pass_by_value)]
-#[inline(always)]
-#[must_use]
-pub const fn value<A>(indexed: Indexed<'_, A>) -> &A {
-    indexed.value
-}
-
-/// Clone and return the value from an `Indexed` item. Consumes its argument: written with `.map(value)` in mind.
-#[allow(clippy::needless_pass_by_value)]
-#[inline(always)]
-#[must_use]
-pub fn clone_value<A: Clone>(indexed: Indexed<'_, A>) -> A {
-    indexed.value.clone()
-}
-
-/// Copy and return the value from an `Indexed` item. Consumes its argument: written with `.map(value)` in mind.
-#[allow(clippy::needless_pass_by_value)]
-#[inline(always)]
-#[must_use]
-pub const fn copy_value<A: Copy>(indexed: Indexed<'_, A>) -> A {
-    *indexed.value
-}
-
-/// Split an `Option<Indexed<'a, A>>` into its index (`Option<usize>`) or value (`Option<&A>`).
-pub trait OptionIndexed<'a> {
-    /// The `A` in `Option<Indexed<'a, A>>`.
-    type Value;
-    /// Pull the index out of an `Option<Indexed<'a, A>>` if it exists.
-    #[must_use]
-    fn index(&self) -> Option<usize>;
-    /// Pull the value out of an `Option<Indexed<'a, A>>` if it exists.
-    #[must_use]
-    fn value(&self) -> Option<&'a Self::Value>;
-}
-
-impl<'a, A> OptionIndexed<'a> for Option<Indexed<'a, A>> {
-    type Value = A;
-    #[inline(always)]
-    #[must_use]
-    fn index(&self) -> Option<usize> {
-        self.as_ref().map(|i| i.index)
-    }
-    #[inline(always)]
-    #[must_use]
-    fn value(&self) -> Option<&'a Self::Value> {
-        self.as_ref().map(|i| i.value)
-    }
-}
+use cache::{Cache, Cached};
+use indexed::Indexed;
 
 /// Caching repeatable iterator that only ever calculates each element once.
 /// NOTE that if the iterator is not referentially transparent (i.e. pure, e.g. mutable state), this *will not necessarily work*!
 /// We replace a call to a previously evaluated index with the value we already made, so side effects will not show up at all.
 #[allow(missing_debug_implementations, clippy::partial_pub_fields)]
-pub struct Reiterator<I: Iterator> {
+pub struct Reiterator<'cache, I: Iterator>
+where
+    Self: 'cache,
+    I::Item: 'cache,
+{
     /// Iterator and a store of previously computed (referentially transparent) values.
-    cache: Cache<I>,
+    cache: Cache<'cache, I>,
 
-    /// Index of the item this iterator _will_ return when we call `get`.
-    /// Mutable: you can assign _any_ value, even out of bounds, and nothing will break:
-    ///   - If the index is in bounds, the next time you call `get`, we calculate each element until this one (if not already cached).
-    ///   - If the index is out of bounds, we return `None` (after exhausting the iterator, though: it's not necessarily a fixed size).
-    /// Note that this doesn't mean that this index's value has been calculated yet.
-    pub index: Cell<usize>,
+    /// Safe to edit! Assign _any_ value, even out of bounds, and nothing will break:
+    ///   - If the index is in bounds, the next time you call `get`/`next`, we calculate each element until this one (if not already cached).
+    ///   - If the index is out of bounds, we return `None` (after exhausting the iterator: it's not necessarily a fixed size, so there's only one way to find out).
+    /// Note that this iterator is lazy, so assigning an index doesn't mean that the value at that index has been calculated.
+    pub index: usize,
 }
 
-impl<I: Iterator> Reiterator<I> {
+impl<'cache, I: Iterator> Reiterator<'cache, I> {
     /// Set up the iterator to return the first element, but don't calculate it yet.
     #[inline(always)]
     #[must_use]
-    pub fn new<II: IntoIterator<IntoIter = I>>(iter: II) -> Self {
-        Self {
-            cache: Cache::new(iter.into_iter()),
-            index: Cell::new(0),
-        }
+    pub fn new(cache: Cache<'cache, I>) -> Self {
+        Self { cache, index: 0 }
     }
 
     /// Set the index to zero. Literal drop-in equivalent for `.index = 0`, always inlined. Clearer, I guess.
     #[inline(always)]
-    pub fn restart(&self) {
-        self.index.set(0);
+    pub fn restart(&mut self) {
+        self.index = 0;
     }
 
     /// Return the element at the requested index *or compute it if we haven't*, provided it's in bounds.
     #[inline]
     #[must_use]
-    pub fn at(&self, index: usize) -> Option<Indexed<'_, I::Item>> {
-        self.cache.get(index).map(|value| Indexed { index, value })
+    pub fn at(&mut self, index: usize) -> Option<&'cache I::Item> {
+        self.cache.get(index).map(|item| {
+            let pointer: *const _ = item;
+            #[allow(unsafe_code)]
+            // SAFETY: Known lifetime.
+            unsafe {
+                &*pointer
+            }
+        })
     }
 
     /// Return the current element or compute it if we haven't, provided it's in bounds.
@@ -249,36 +188,56 @@ impl<I: Iterator> Reiterator<I> {
     /// we won't advance to the next element until you explicitly call `next`.
     #[inline(always)]
     #[must_use]
-    pub fn get(&self) -> Option<Indexed<'_, I::Item>> {
-        self.at(self.index.get())
+    pub fn get(&mut self) -> Option<Indexed<'cache, I::Item>> {
+        self.at(self.index).map(|value| Indexed {
+            index: self.index,
+            value,
+        })
     }
 
     /// Advance the index without computing the corresponding value.
     #[inline(always)]
-    pub fn next(&self) -> Option<usize> {
-        self.index.set(self.index.get().checked_add(1)?);
-        self.cache.get(self.index.get()).map(|_| self.index.get())
+    pub fn lazy_next(&mut self) -> Option<usize> {
+        self.index.checked_add(1).map(|incr| {
+            self.index = incr;
+            incr
+        })
     }
 }
+
+impl<'cache, I: Iterator> Iterator for Reiterator<'cache, I> {
+    type Item = Indexed<'cache, I::Item>;
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let tmp = self.get();
+        let _ = self.lazy_next()?;
+        tmp
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Reiterator<'_, I> {}
 
 /// Create a `Reiterator` from anything that can be turned into an `Iterator`.
 #[inline(always)]
 #[must_use]
-pub fn reiterate<I: IntoIterator>(iter: I) -> Reiterator<I::IntoIter> {
-    Reiterator::new(iter)
+pub fn reiterate<'cache, I: IntoIterator>(iter: I) -> Reiterator<'cache, I::IntoIter> {
+    Reiterator {
+        cache: iter.cached(),
+        index: 0,
+    }
 }
 
 /// Pipe the output of an `IntoIter` to make a `Reiterator`.
 pub trait Reiterate: IntoIterator {
     /// Create a `Reiterator` from anything that can be turned into an `Iterator`.
     #[must_use]
-    fn reiterate(self) -> Reiterator<Self::IntoIter>;
+    fn reiterate<'cache>(self) -> Reiterator<'cache, Self::IntoIter>;
 }
 
 impl<I: IntoIterator> Reiterate for I {
     #[inline(always)]
     #[must_use]
-    fn reiterate(self) -> Reiterator<Self::IntoIter> {
+    fn reiterate<'cache>(self) -> Reiterator<'cache, Self::IntoIter> {
         reiterate(self)
     }
 }

@@ -7,41 +7,49 @@
 #![allow(clippy::arithmetic_side_effects, clippy::integer_arithmetic)]
 
 #[allow(clippy::wildcard_imports)]
-use crate::*;
 use ::alloc::{vec, vec::Vec};
+
+use crate::{cache::Cached, indexed::Indexed, Reiterate};
 
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 #[test]
 fn persistent_addresses_cache() {
-    let range = 0..u16::MAX;
-    let cache = Cache::new(range.clone());
+    let range = 0..=u16::MAX;
+    let mut cache = range.clone().cached();
     let mut addresses = vec![];
     for i in range.clone() {
         addresses.push(cache.get(usize::from(i)).unwrap());
     }
     for i in range {
-        assert_eq!(*addresses[usize::from(i)], i);
+        assert_eq!(addresses[usize::from(i)], &i);
     }
 }
 
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 #[test]
 fn persistent_addresses_reiterator() {
-    let range = 0..u16::MAX;
-    let iter = range.clone().reiterate();
+    let range = 0..=u8::MAX;
     let mut addresses = vec![];
-    loop {
-        addresses.push(iter.get().unwrap());
-        if iter.next().is_none() {
-            break;
-        }
+    // Create a *temporary* `Reiterator` here:
+    // Rust needs to be able to figure out that
+    // it needs to live until the end of the function
+    for i in range.clone().reiterate() {
+        println!("{i:#?}");
+        addresses.push(i);
     }
-    for i in range {
+    assert_eq!(addresses.len(), range.len());
+    // Vec just underwent a metric fuckton of reallocations
+    // But we hold the original memory locations
+    // So this test is crucial
+    for (i, addr) in addresses.into_iter().enumerate() {
+        println!("   i = {i:}");
+        println!("addr = {addr:#?}");
+        println!();
         assert_eq!(
-            addresses[usize::from(i)],
+            addr,
             Indexed {
-                index: usize::from(i),
-                value: &i
+                index: i,
+                value: &i.try_into().unwrap()
             }
         );
     }
@@ -56,8 +64,8 @@ fn persistent_addresses_reiterator() {
 /// Experimenting with `Pin`s and two layers of indirection.
 #[test]
 fn simple_range_doesnt_panic() {
-    let cache = Cache::new(0..u16::MAX);
-    for i in 0..u16::MAX {
+    let mut cache = (0..=u16::MAX).cached();
+    for i in 0..=u16::MAX {
         let lhs = cache.get(usize::from(i));
         let rhs = Some(&i);
         assert_eq!(lhs, rhs);
@@ -66,36 +74,27 @@ fn simple_range_doesnt_panic() {
 
 quickcheck::quickcheck! {
 
-    fn cache_range(indices: ::alloc::vec::Vec<u8>) -> bool {
-        let cache = Cache::new(0..=u8::MAX);
+    fn prop_cache_range(indices: ::alloc::vec::Vec<u8>) -> bool {
+        let mut cache = (0..=u8::MAX).cached();
         indices.into_iter().all(|i| {
-            cache.get(usize::from(i)).is_some_and(|v| *v == i)
+            cache.get(usize::from(i)).is_some_and(|v| v == &i)
         })
     }
 
-    fn never_panics(v: Vec<bool>, indices: Vec<usize>) -> bool {
-        let size = v.len();
-        let iter = Reiterator::new(v);
-        for i in indices {
-            assert_eq!(iter.at(i).map(index), (i < size).then_some(i));
-        }
-        true
-    }
-
-    fn always_some_in_bounds(v: Vec<bool>, indices: Vec<usize>) -> bool {
+    fn prop_always_some_in_bounds(v: Vec<bool>, indices: Vec<usize>) -> bool {
         let size = v.len();
         if size > 0 {
-            let iter = Reiterator::new(v);
+            let mut iter = v.reiterate();
             for i in indices {
-                assert_eq!(iter.at(i % size).map(index), Some(i % size));
+                assert!(iter.at(i % size).is_some());
             }
         }
         true
     }
 
-    fn always_none_out_of_bounds(v: Vec<bool>, indices: Vec<usize>) -> bool {
+    fn prop_always_none_out_of_bounds(v: Vec<bool>, indices: Vec<usize>) -> bool {
         let size = v.len();
-        let iter = Reiterator::new(v);
+        let mut iter = v.reiterate();
         for i in indices {
             if i >= size {
                 assert!(iter.at(i).is_none());
@@ -104,16 +103,28 @@ quickcheck::quickcheck! {
         true
     }
 
-    fn correct_range(size: u8, indices: Vec<usize>) -> bool {
+    fn prop_correct_range(size: u8, indices: Vec<u8>) -> bool {
         if size > 0 {
-            let iter = Reiterator::new(0..size);
+            let mut iter = (0..=size).reiterate();
             for i in indices {
-                let indexed = iter.at(i);
-                assert_eq!(indexed.as_ref().map(|x| x.index), (i < usize::from(size)).then_some(i));
-                assert_eq!(indexed.as_ref().map(|x| x.index), indexed.map(|x| usize::from(*x.value)));
+                assert_eq!(iter.at(usize::from(i)), (i <= size).then_some(&i));
             }
         }
         true
+    }
+
+
+    fn prop_persistent_addresses_cache(v: Vec<u16>) -> bool {
+        let mut cache = (0..=u16::MAX).cached();
+        let mut addresses = vec![];
+        for i in v.iter() {
+            addresses.push(cache.get(usize::from(*i)).unwrap());
+        }
+        assert_eq!(addresses.len(), v.len());
+        // Vec just underwent a metric fuckton of reallocations
+        // But we hold the original memory locations
+        // So this test is crucial
+        addresses.into_iter().zip(v).all(|(a, v)| a == &v)
     }
 
 }

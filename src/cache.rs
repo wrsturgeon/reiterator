@@ -9,45 +9,99 @@
 
 #![allow(box_pointers)]
 
-use ::alloc::{vec, vec::Vec};
-use ::core::{cell::RefCell, pin::Pin};
-use alloc::boxed::Box;
+use ::alloc::{boxed::Box, vec, vec::Vec};
+use ::core::{marker::PhantomData, pin::Pin};
 
-/// Cache that only works with iterator-like structures.
-#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Cache<I: Iterator> {
+/// Cache that works with iterator-like structures.
+/// Note that all operations are `const` since there are no user-facing mutations.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Cache<'cache, I: Iterator>
+where
+    Self: 'cache, // Necessary to make sure `'cache` is _exactly_ this struct's lifetime, not longer!
+    I: 'cache,
+    I::Item: 'cache,
+{
     /// Iterator producing the input being cached.
-    iter: RefCell<I>,
+    iter: I,
     /// Vector of cached inputs.
-    vec: RefCell<Vec<Pin<Box<I::Item>>>>, // TODO: vector of buffers
+    vec: Vec<Pin<Box<I::Item>>>, // TODO: vector of buffers
+    /// Lifetime of this `struct`.
+    lifetime: PhantomData<&'cache ::core::convert::Infallible>,
+    /// Record of the first memory location for each index.
+    #[cfg(test)]
+    record: Vec<*const I::Item>,
 }
 
-impl<I: Iterator> Cache<I> {
+impl<'cache, I: Iterator> Cache<'cache, I> {
     /// Initialize a new empty cache.
     #[inline(always)]
-    pub const fn new(i: I) -> Self {
+    pub fn new<II: IntoIterator<IntoIter = I>>(into_iter: II) -> Self {
         Self {
-            iter: RefCell::new(i),
-            vec: RefCell::new(vec![]),
+            iter: into_iter.into_iter(),
+            vec: vec![],
+            lifetime: PhantomData,
+            #[cfg(test)]
+            record: vec![],
         }
     }
 
+    /// Whether this cache holds any cached elements.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.vec.is_empty()
+    }
+
     /// If not already cached, repeatedly call `next` until we either reach `index` or `next` returns `None`.
+    /// Immutably borrow this entire `Cache` for the duration of your returned reference.
     #[inline]
-    pub fn get(&self, index: usize) -> Option<&I::Item> {
+    pub fn get(&mut self, index: usize) -> Option<&'cache I::Item> {
         loop {
-            if let Some(cached) = self.vec.borrow().get(index) {
-                return Some(
-                    #[allow(clippy::as_conversions, trivial_casts, unsafe_code)]
-                    // SAFETY: Pinned addresses with the correct lifetime. Property-tested as well.
-                    unsafe {
-                        &*(cached.as_ref().get_ref() as *const _)
-                    },
-                );
+            if let Some(cached) = self.vec.get(index) {
+                let pointer: *const _ = cached.as_ref().get_ref();
+                // SAFETY:
+                // Removing `mut` from the lifetime but otherwise leaving it untouched.
+                // Since it's `Pin`ned and has the exact same lifetime as this borrow,
+                // Rust statically asserts that we don't invalidate it later.
+                #[allow(unsafe_code)]
+                return Some(unsafe { &*pointer });
             }
-            self.vec
-                .borrow_mut()
-                .push(Box::pin(self.iter.borrow_mut().next()?));
+            let pinned_memory_location = Box::pin(self.iter.next()?);
+            #[cfg(test)]
+            {
+                self.record.push(pinned_memory_location.as_ref().get_ref());
+            }
+            self.vec.push(pinned_memory_location);
+            #[cfg(test)]
+            {
+                assert_eq!(self.vec.len(), self.record.len());
+                for (i, (v, &r)) in self.vec.iter().zip(self.record.iter()).enumerate() {
+                    let vref = v.as_ref().get_ref();
+                    assert!(::core::ptr::eq(vref, r), "Element #{i:} corrupt");
+                }
+            }
         }
+    }
+}
+
+/// Create a `Cache` from anything that can be turned into an `Iterator`.
+#[inline(always)]
+#[must_use]
+pub fn cached<'cache, I: IntoIterator>(iter: I) -> Cache<'cache, I::IntoIter> {
+    Cache::new(iter)
+}
+
+/// Pipe the output of an `IntoIterator` to make a `Reiterator`.
+pub trait Cached: IntoIterator {
+    /// Create a `Reiterator` from anything that can be turned into an `Iterator`.
+    #[must_use]
+    fn cached<'cache>(self) -> Cache<'cache, Self::IntoIter>;
+}
+
+impl<I: IntoIterator> Cached for I {
+    #[inline(always)]
+    #[must_use]
+    fn cached<'cache>(self) -> Cache<'cache, Self::IntoIter> {
+        cached(self)
     }
 }
