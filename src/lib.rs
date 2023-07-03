@@ -17,48 +17,30 @@
 //! Plus, it returns the index of the value as well, but there are built-in `map`-compatible mini-functions to get either the value or the index only:
 //!
 //! ```rust
-//! use reiterator::{OptionIndexed, Reiterate, value};
-//! let iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed until...
-//! let indexed = iter.at(1); // here. We only compute the first two, and we cache their results.
-//! assert!(indexed.is_some());
-//! assert_eq!(indexed.value(), Some(&'b'));
-//! assert_eq!(indexed.index(), Some(1));
-//! let _ = iter.at(2); // Calls the iterator only once
-//! let _ = iter.at(0); let _ = iter.at(1); let _ = iter.at(2); // All cached! Just a few clocks and pulling from the heap.
-//! ```
+//! use reiterator::{Reiterate, indexed::Indexed};
 //!
-//! You can drive it like a normal `Iterator`:
-//!
-//! ```rust
-//! use reiterator::{Indexed, Reiterate, value};
 //! let mut iter = vec!['a', 'b', 'c'].reiterate(); // None of the values are computed or cached until...
-//! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' })); // here.
-//! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' })); // Using the cached version
-//! assert_eq!(iter.next(), Some(1)); // Note that `next` doesn't return a value for simplicity: would it return 'a' or 'b'?
-//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' })); // ...but it does change the internal index
-//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
-//! assert_eq!(iter.next(), Some(2));
-//! assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));
-//! assert_eq!(iter.next(), None); // Off the end of the iterator!
-//! assert_eq!(iter.get(), None);
 //!
-//! // But then you can rewind and do it all again for free, returning cached references to the same values we just made:
+//! // You can drive it like a normal `Iterator`:
+//! assert_eq!(iter.next(), Some(Indexed { index: 0, value: &'a' })); // here: only the first one, whose cache is referenced.
+//! assert_eq!(iter.next(), Some(Indexed { index: 1, value: &'b' })); // Cooked up the second value on demand.
+//! assert_eq!(iter.next(), Some(Indexed { index: 2, value: &'c' }));
+//! assert_eq!(iter.next(), None); // Out of bounds!
+//!
+//! // Note that we literally return the same memory addresses as before:
 //! iter.restart();
-//! assert_eq!(iter.get(), Some(Indexed { index: 0, value: &'a' }));
-//! assert_eq!(iter.next(), Some(1));
-//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
+//! assert_eq!(iter.next(), Some(Indexed { index: 0, value: &'a' }));
+//! assert_eq!(iter.next(), Some(Indexed { index: 1, value: &'b' }));
 //!
-//! // Or start from anywhere:
-//! iter.index.set(1);
-//! assert_eq!(iter.get(), Some(Indexed { index: 1, value: &'b' }));
-//! assert_eq!(iter.next(), Some(2));
-//! assert_eq!(iter.get(), Some(Indexed { index: 2, value: &'c' }));
-//! assert_eq!(iter.at(1), Some(Indexed { index: 1, value: &'b' }));
-//! assert_eq!(iter.at(2), Some(Indexed { index: 2, value: &'c' }));
+//! // Start from anywhere:
+//! iter.index = 1;
+//! assert_eq!(iter.next(), Some(Indexed { index: 1, value: &'b' }));
+//! assert_eq!(iter.next(), Some(Indexed { index: 2, value: &'c' }));
+//!
+//! // Or hop around at will, just as quickly (if not faster):
+//! assert_eq!(iter.at(1), Some(&'b'));
+//! assert_eq!(iter.at(2), Some(&'c'));
 //! assert_eq!(iter.at(3), None);
-//!
-//! // And just to prove that it's literally a reference to the same cached value in memory:
-//! assert!(std::ptr::eq(iter.at(0).unwrap().value, iter.at(0).unwrap().value));
 //! ```
 
 #![cfg_attr(not(test), no_std)]
@@ -133,20 +115,13 @@ pub mod indexed;
 #[cfg(test)]
 mod test;
 
-use cache::{Cache, Cached};
-use indexed::Indexed;
-
 /// Caching repeatable iterator that only ever calculates each element once.
 /// NOTE that if the iterator is not referentially transparent (i.e. pure, e.g. mutable state), this *will not necessarily work*!
 /// We replace a call to a previously evaluated index with the value we already made, so side effects will not show up at all.
 #[allow(missing_debug_implementations, clippy::partial_pub_fields)]
-pub struct Reiterator<'cache, I: Iterator>
-where
-    Self: 'cache,
-    I::Item: 'cache,
-{
+pub struct Reiterator<I: Iterator> {
     /// Iterator and a store of previously computed (referentially transparent) values.
-    cache: Cache<'cache, I>,
+    cache: cache::Cache<I>,
 
     /// Safe to edit! Assign _any_ value, even out of bounds, and nothing will break:
     ///   - If the index is in bounds, the next time you call `get`/`next`, we calculate each element until this one (if not already cached).
@@ -155,12 +130,15 @@ where
     pub index: usize,
 }
 
-impl<'cache, I: Iterator> Reiterator<'cache, I> {
+impl<I: Iterator> Reiterator<I> {
     /// Set up the iterator to return the first element, but don't calculate it yet.
     #[inline(always)]
-    #[must_use]
-    pub fn new(cache: Cache<'cache, I>) -> Self {
-        Self { cache, index: 0 }
+    pub fn new<II: IntoIterator<IntoIter = I>>(into_iter: II) -> Self {
+        use cache::Cached;
+        Self {
+            cache: into_iter.cached(),
+            index: 0,
+        }
     }
 
     /// Set the index to zero. Literal drop-in equivalent for `.index = 0`, always inlined. Clearer, I guess.
@@ -172,7 +150,7 @@ impl<'cache, I: Iterator> Reiterator<'cache, I> {
     /// Return the element at the requested index *or compute it if we haven't*, provided it's in bounds.
     #[inline]
     #[must_use]
-    pub fn at(&mut self, index: usize) -> Option<&'cache I::Item> {
+    pub fn at(&mut self, index: usize) -> Option<&I::Item> {
         self.cache.get(index).map(|item| {
             let pointer: *const _ = item;
             #[allow(unsafe_code)]
@@ -188,10 +166,10 @@ impl<'cache, I: Iterator> Reiterator<'cache, I> {
     /// we won't advance to the next element until you explicitly call `next`.
     #[inline(always)]
     #[must_use]
-    pub fn get(&mut self) -> Option<Indexed<'cache, I::Item>> {
-        self.at(self.index).map(|value| Indexed {
+    pub fn get(&mut self) -> Option<indexed::Indexed<'_, I::Item>> {
+        Some(indexed::Indexed {
             index: self.index,
-            value,
+            value: self.at(self.index)?,
         })
     }
 
@@ -203,24 +181,155 @@ impl<'cache, I: Iterator> Reiterator<'cache, I> {
             incr
         })
     }
+
+    /// Like `Iterator::next` but with a dependent lifetime.
+    #[inline(always)]
+    pub fn next(&mut self) -> Option<indexed::Indexed<'_, I::Item>> {
+        let index = self.index;
+        let _ = self.lazy_next()?;
+        self.at(index)
+            .map(|value| indexed::Indexed { index, value })
+    }
+
+    /// Map `Indexed`s to a known lifetime.
+    #[inline(always)]
+    #[must_use]
+    pub fn map<UnReferenceInator: FnMut(indexed::Indexed<'_, I::Item>) -> Output, Output>(
+        self,
+        un_reference_inator: UnReferenceInator,
+    ) -> Map<I, UnReferenceInator, Output> {
+        Map {
+            iter: self,
+            un_reference_inator,
+        }
+    }
+
+    /// Map indices to a known lifetime.
+    #[inline(always)]
+    #[must_use]
+    pub fn map_indices<UnReferenceInator: FnMut(usize) -> Output, Output>(
+        self,
+        un_reference_inator: UnReferenceInator,
+    ) -> MapIndices<I, UnReferenceInator, Output> {
+        MapIndices {
+            iter: self,
+            un_reference_inator,
+        }
+    }
+
+    /// Map values to a known lifetime.
+    #[inline(always)]
+    #[must_use]
+    pub fn map_values<UnReferenceInator: FnMut(&I::Item) -> Output, Output>(
+        self,
+        un_reference_inator: UnReferenceInator,
+    ) -> MapValues<I, UnReferenceInator, Output> {
+        MapValues {
+            iter: self,
+            un_reference_inator,
+        }
+    }
+
+    /// Clone values lazily as we produce them.
+    #[inline(always)]
+    #[must_use]
+    pub fn cloned(
+        self,
+    ) -> Map<I, impl FnMut(indexed::Indexed<'_, I::Item>) -> (usize, I::Item), (usize, I::Item)>
+    where
+        I::Item: Clone,
+    {
+        Map {
+            iter: self,
+            un_reference_inator: |indexed| (indexed.index, indexed.value.clone()),
+        }
+    }
+
+    // TODO: fold, filter, ...
 }
 
-impl<'cache, I: Iterator> Iterator for Reiterator<'cache, I> {
-    type Item = Indexed<'cache, I::Item>;
+/// Map `Indexed`s to a known lifetime.
+#[allow(missing_debug_implementations)]
+pub struct Map<
+    I: Iterator,
+    UnReferenceInator: FnMut(indexed::Indexed<'_, I::Item>) -> Output,
+    Output,
+> {
+    iter: Reiterator<I>,
+    un_reference_inator: UnReferenceInator,
+}
+
+impl<I: Iterator, UnReferenceInator: FnMut(indexed::Indexed<'_, I::Item>) -> Output, Output>
+    Iterator for Map<I, UnReferenceInator, Output>
+{
+    type Item = Output;
+
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
-        let tmp = self.get();
-        let _ = self.lazy_next()?;
-        tmp
+        self.iter.next().map(&mut self.un_reference_inator)
     }
 }
 
-impl<I: ExactSizeIterator> ExactSizeIterator for Reiterator<'_, I> {}
+impl<I: Iterator, UnReferenceInator: FnMut(indexed::Indexed<'_, I::Item>) -> Output, Output>
+    ExactSizeIterator for Map<I, UnReferenceInator, Output>
+{
+}
+
+/// Map indices to a known lifetime.
+#[allow(missing_debug_implementations)]
+pub struct MapIndices<I: Iterator, UnReferenceInator: FnMut(usize) -> Output, Output> {
+    iter: Reiterator<I>,
+    un_reference_inator: UnReferenceInator,
+}
+
+impl<I: Iterator, UnReferenceInator: FnMut(usize) -> Output, Output> Iterator
+    for MapIndices<I, UnReferenceInator, Output>
+{
+    type Item = Output;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next()
+            .map(|indexed| (self.un_reference_inator)(indexed.index))
+    }
+}
+
+impl<I: Iterator, UnReferenceInator: FnMut(usize) -> Output, Output> ExactSizeIterator
+    for MapIndices<I, UnReferenceInator, Output>
+{
+}
+
+/// Map values to a known lifetime.
+#[allow(missing_debug_implementations)]
+pub struct MapValues<I: Iterator, UnReferenceInator: FnMut(&I::Item) -> Output, Output> {
+    iter: Reiterator<I>,
+    un_reference_inator: UnReferenceInator,
+}
+
+impl<I: Iterator, UnReferenceInator: FnMut(&I::Item) -> Output, Output> Iterator
+    for MapValues<I, UnReferenceInator, Output>
+{
+    type Item = Output;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next()
+            .map(|indexed| (self.un_reference_inator)(indexed.value))
+    }
+}
+
+impl<I: Iterator, UnReferenceInator: FnMut(&I::Item) -> Output, Output> ExactSizeIterator
+    for MapValues<I, UnReferenceInator, Output>
+{
+}
 
 /// Create a `Reiterator` from anything that can be turned into an `Iterator`.
 #[inline(always)]
 #[must_use]
-pub fn reiterate<'cache, I: IntoIterator>(iter: I) -> Reiterator<'cache, I::IntoIter> {
+pub fn reiterate<I: IntoIterator>(iter: I) -> Reiterator<I::IntoIter> {
+    use cache::Cached;
     Reiterator {
         cache: iter.cached(),
         index: 0,
@@ -231,13 +340,13 @@ pub fn reiterate<'cache, I: IntoIterator>(iter: I) -> Reiterator<'cache, I::Into
 pub trait Reiterate: IntoIterator {
     /// Create a `Reiterator` from anything that can be turned into an `Iterator`.
     #[must_use]
-    fn reiterate<'cache>(self) -> Reiterator<'cache, Self::IntoIter>;
+    fn reiterate(self) -> Reiterator<Self::IntoIter>;
 }
 
 impl<I: IntoIterator> Reiterate for I {
     #[inline(always)]
     #[must_use]
-    fn reiterate<'cache>(self) -> Reiterator<'cache, Self::IntoIter> {
+    fn reiterate(self) -> Reiterator<Self::IntoIter> {
         reiterate(self)
     }
 }

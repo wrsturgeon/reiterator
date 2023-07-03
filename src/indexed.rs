@@ -63,7 +63,7 @@ pub trait OptionIndexed<'value> {
     fn value(&self) -> Option<&'value Self::Value>;
 }
 
-impl<'a, Value> OptionIndexed<'a> for Option<Indexed<'a, Value>> {
+impl<'value, Value> OptionIndexed<'value> for Option<Indexed<'value, Value>> {
     type Value = Value;
 
     #[inline(always)]
@@ -74,7 +74,7 @@ impl<'a, Value> OptionIndexed<'a> for Option<Indexed<'a, Value>> {
 
     #[inline(always)]
     #[must_use]
-    fn value(&self) -> Option<&'a Self::Value> {
+    fn value(&self) -> Option<&'value Self::Value> {
         self.as_ref().map(|i| i.value)
     }
 }
